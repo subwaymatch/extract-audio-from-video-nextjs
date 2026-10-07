@@ -98,11 +98,19 @@ export function describePiece(ranges: readonly TrimRange[], index: number, cut: 
   return `Part ${index + 1} of ${ranges.length}: ${cut === "exact" ? marks : `${marks} or a little before`}`;
 }
 
+/**
+ * The id of one piece under a rule. The rule and the cut are in it, so part
+ * 2 of 3 and part 2 of 4 are two outputs.
+ */
+function pieceId(index: number, rule: PieceRule, cut: PieceCut): string {
+  return `part-${index + 1}-${rule.kind === "length" ? `${rule.seconds}s` : `of${rule.count}`}-${cut}`;
+}
+
 /** One piece as one format, for a rule. */
 export function pieceFormat(index: number, rule: PieceRule, cut: PieceCut = "fast"): OutputFormat {
   if (cut === "exact") return exactPieceFormat(index, rule);
   return {
-    id: `part-${index + 1}`,
+    id: pieceId(index, rule, cut),
     label: `Part ${index + 1}`,
     blurb: "This part as its own file, every stream copied",
     lossless: true,
@@ -171,7 +179,7 @@ export function pieceFormat(index: number, rule: PieceRule, cut: PieceCut = "fas
  */
 function exactPieceFormat(index: number, rule: PieceRule): OutputFormat {
   return {
-    id: `part-${index + 1}`,
+    id: pieceId(index, rule, "exact"),
     label: `Part ${index + 1}`,
     blurb: "This part as its own file, cut to the frame",
     lossless: false,
@@ -264,6 +272,6 @@ export function pieceFormats(rule: PieceRule, cut: PieceCut = "fast"): OutputFor
 }
 
 /** The formats a file gets on arrival: one per piece its length makes. */
-export function pieceFormatIds(rule: PieceRule): (probe: ProbeResult) => string[] {
-  return (probe) => pieceRanges(probe.durationSeconds, rule).map((_, index) => `part-${index + 1}`);
+export function pieceFormatIds(rule: PieceRule, cut: PieceCut = "fast"): (probe: ProbeResult) => string[] {
+  return (probe) => pieceRanges(probe.durationSeconds, rule).map((_, index) => pieceId(index, rule, cut));
 }

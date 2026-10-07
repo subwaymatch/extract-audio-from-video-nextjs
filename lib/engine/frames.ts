@@ -50,11 +50,19 @@ export function describeFrame(times: readonly number[], index: number): string {
   return at === undefined ? `Frame ${index + 1}` : `Frame ${index + 1} at ${formatTimecode(at)}`;
 }
 
+/**
+ * The id of one moment at these settings. The interval and the picture type
+ * are in it, so frame 3 every 5 seconds and frame 3 every 2 are two outputs.
+ */
+function frameId(index: number, settings: FramesSettings): string {
+  return `frame-${index + 1}-every${settings.everySeconds}s-${settings.image}`;
+}
+
 /** One moment as one format. */
 export function frameAtFormat(index: number, settings: FramesSettings): OutputFormat {
   const isPng = settings.image === "png";
   return {
-    id: `frame-${index + 1}`,
+    id: frameId(index, settings),
     label: `Frame ${index + 1}`,
     blurb: isPng ? "This moment as a lossless PNG" : "This moment as a JPEG",
     lossless: isPng,
@@ -98,7 +106,7 @@ export function frameFormats(settings: FramesSettings): OutputFormat[] {
 }
 
 export function frameFormatIds(settings: FramesSettings): (probe: ProbeResult) => string[] {
-  return (probe) => frameTimes(probe.durationSeconds, settings.everySeconds).map((_, index) => `frame-${index + 1}`);
+  return (probe) => frameTimes(probe.durationSeconds, settings.everySeconds).map((_, index) => frameId(index, settings));
 }
 
 /** A line for the panel: how many frames a length yields, and whether the cap binds. */

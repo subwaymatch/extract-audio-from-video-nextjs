@@ -469,7 +469,7 @@ describe.skipIf(!hasFfmpeg)("watermark, frames and audio-join plans against a re
     for (const index of [0, 1, 2]) {
       const { probed, output } = run(frameAtFormat(index, settings), video);
       expect(stream(probed, "video")?.codec_name).toBe("mjpeg");
-      expect(output).toMatch(/frame-\d\.jpg$/);
+      expect(output).toMatch(/frame-\d-every2s-jpg\.jpg$/);
     }
     const png = run(frameAtFormat(1, { everySeconds: 2, image: "png" }), video);
     expect(stream(png.probed, "video")?.codec_name).toBe("png");

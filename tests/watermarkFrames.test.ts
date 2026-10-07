@@ -69,7 +69,10 @@ describe("frames every so many seconds", () => {
   it("seeks to each moment and writes one frame, named by it", () => {
     const settings = { everySeconds: 5, image: "jpg" as const };
     expect(frameFormats(settings)).toHaveLength(MAX_FRAMES);
-    expect(frameFormatIds(settings)(probe({ durationSeconds: 12 }))).toEqual(["frame-1", "frame-2", "frame-3"]);
+    expect(frameFormatIds(settings)(probe({ durationSeconds: 12 }))).toEqual(["frame-1-every5s-jpg", "frame-2-every5s-jpg", "frame-3-every5s-jpg"]);
+    // The ids name the interval and the type, so a rerun under other settings tells its frames apart.
+    expect(frameFormatIds(settings)(probe({ durationSeconds: 12 }))).toEqual(frameFormats(settings).slice(0, 3).map((format) => format.id));
+    expect(frameAtFormat(0, { everySeconds: 2, image: "png" }).id).toBe("frame-1-every2s-png");
     const third = frameAtFormat(2, settings);
     expect(third.describe?.(probe({ durationSeconds: 12 }))).toBe("Frame 3 at 0:10");
     expect(third.offer?.(probe({ durationSeconds: 12 }), context())).toBe(true);

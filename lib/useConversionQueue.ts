@@ -101,6 +101,14 @@ export interface JobOutput {
   /** Object URL for playback and download; revoked when the job is removed. */
   url?: string;
   error?: JobFailure;
+  /**
+   * Queued because the settings asked for it - on arrival, from the probe,
+   * or by a rerun - rather than from a chip or the clip panel on the card.
+   * A rerun replaces these and leaves the ones the visitor asked for alone.
+   */
+  fromSettings?: boolean;
+  /** Whether the source's tags were stripped, recorded when the output starts. */
+  stripMetadata?: boolean;
 }
 
 export interface Job {
@@ -302,6 +310,7 @@ function makeOutputs(
   formats: readonly OutputFormat[],
   trim: TrimRange | null,
   probe?: ProbeResult,
+  fromSettings = false,
 ): JobOutput[] {
   return formats.map((format) => ({
     id: nextOutputId(),
@@ -312,6 +321,7 @@ function makeOutputs(
     status: "pending" as const,
     ratio: null,
     processedSeconds: 0,
+    fromSettings,
   }));
 }
 
@@ -367,6 +377,49 @@ export function summarizeOutputs(
   }
   if (cancelled) return { status: "cancelled", phase: "Cancelled", error: undefined };
   return { status: "done", phase: "Done", error: undefined };
+}
+
+/**
+ * What a rerun would do to one file: the formats it would queue and the
+ * outputs it would drop. Null when the file already has what the settings
+ * ask for.
+ *
+ * `wanted` is what the settings give the file now, and an output covers one
+ * of them when it is the same format over the whole file, made with the
+ * same metadata switch. A cancelled or failed row still covers its format:
+ * that is the visitor's decision, or a Retry away. Clips and outputs added
+ * from the card's own chips are kept; outputs the earlier settings queued
+ * are dropped, since a rerun replaces what those settings made.
+ */
+export function planRerun(
+  job: Job,
+  wanted: readonly OutputFormat[],
+  stripMetadata: boolean,
+): { missing: OutputFormat[]; dropped: JobOutput[] } | null {
+  // A file that never opened is a Retry, not a rerun; one that is running
+  // finishes first.
+  if (!job.probe || job.status === "queued" || job.status === "preparing" || job.status === "converting") {
+    return null;
+  }
+  const madeAlike = (output: JobOutput) =>
+    output.status !== "done" ||
+    output.format.alwaysStripsMetadata === true ||
+    (output.stripMetadata ?? stripMetadata) === stripMetadata;
+  const missing = wanted.filter(
+    (format) =>
+      !job.outputs.some(
+        (output) => output.formatId === format.id && output.trim === null && madeAlike(output),
+      ),
+  );
+  if (missing.length === 0) return null;
+
+  const wantedIds = new Set(wanted.map((format) => format.id));
+  const dropped = job.outputs.filter(
+    (output) =>
+      output.trim === null &&
+      (wantedIds.has(output.formatId) ? !madeAlike(output) : output.fromSettings === true),
+  );
+  return { missing, dropped };
 }
 
 /* ---- The stores --------------------------------------------------------- */
@@ -454,6 +507,26 @@ function getStore(key: string, options: QueueOptions): QueueStore {
 
 function notify(store: QueueStore): void {
   for (const listener of store.listeners) listener();
+}
+
+/**
+ * The formats the settings ask for: what a file is queued with on arrival
+ * or, for a tool whose outputs come from the file itself, once it has been
+ * read. See QueueOptions.formatsForFile.
+ */
+function settingsFormats(store: QueueStore, probe?: ProbeResult): OutputFormat[] {
+  const { options } = store;
+  const capabilities = getEngineState().capabilities;
+  if (options.formatsForFile) {
+    return probe ? availableFormats(options.formatsForFile(probe), capabilities, options) : [];
+  }
+  return availableFormats(
+    // A tool whose formats come from a settings panel has no selection to
+    // honour: the panel is the selection, and it is already in the ids.
+    options.formatPicker ? store.selectedFormats : options.defaultFormatIds,
+    capabilities,
+    options,
+  );
 }
 
 /** @internal - lets tests start from a clean page. */
@@ -647,12 +720,11 @@ export function useConversionQueue(options: QueueOptions = AUDIO_QUEUE_OPTIONS) 
          * comes back through here for every format added from its card, and
          * by then it has its probe.
          */
-        const { formatsForFile } = store.options;
-        if (formatsForFile && firstOpen) {
+        if (store.options.formatsForFile && firstOpen) {
           const probe = session.probe;
-          const wanted = availableFormats(formatsForFile(probe), getEngineState().capabilities, store.options);
+          const wanted = settingsFormats(store, probe);
           patchJob(jobId, (latest) => ({
-            outputs: [...latest.outputs, ...makeOutputs(wanted, null, probe)],
+            outputs: [...latest.outputs, ...makeOutputs(wanted, null, probe, true)],
           }));
         }
 
@@ -747,6 +819,7 @@ export function useConversionQueue(options: QueueOptions = AUDIO_QUEUE_OPTIONS) 
               ?.outputs.find((entry) => entry.status === "pending");
             if (!output) break;
 
+            const stripMetadata = store.stripMetadata;
             patchJob(jobId, {
               phase: describePhase({ label: output.label, trim: output.trim }),
             });
@@ -754,13 +827,14 @@ export function useConversionQueue(options: QueueOptions = AUDIO_QUEUE_OPTIONS) 
               status: "running",
               ratio: 0,
               processedSeconds: 0,
+              stripMetadata,
             });
 
             try {
               let lastTick = 0;
               const result = await session.extract(output.format, {
                 trim: output.trim,
-                stripMetadata: store.stripMetadata,
+                stripMetadata,
                 onProgress: (progress) => {
                   const now = Date.now();
                   if (now - lastTick < PROGRESS_THROTTLE_MS) return;
@@ -954,16 +1028,8 @@ export function useConversionQueue(options: QueueOptions = AUDIO_QUEUE_OPTIONS) 
       if (files.length === 0) return;
       const current = store.options;
       // A tool whose outputs come from the file itself has nothing to add
-      // until the file has been read; see QueueOptions.formatsForFile.
-      const formats = current.formatsForFile
-        ? []
-        : availableFormats(
-            // A tool whose formats come from a settings panel has no selection to
-            // honour: the panel is the selection, and it is already in the ids.
-            current.formatPicker ? store.selectedFormats : current.defaultFormatIds,
-            getEngineState().capabilities,
-            current,
-          );
+      // until the file has been read.
+      const formats = settingsFormats(store);
       const settings = store.trimSettings;
       /*
        * Newly added files are never pre-clipped. A range is chosen per file on
@@ -1006,7 +1072,7 @@ export function useConversionQueue(options: QueueOptions = AUDIO_QUEUE_OPTIONS) 
           trim,
           autoTrim: settings.mode === "silence",
           silenceOptions: settings.silence,
-          outputs: makeOutputs(formats, trim),
+          outputs: makeOutputs(formats, trim, undefined, true),
           // The clip panel is always open, so the envelope is always wanted.
           wantsWaveform: current.waveform ?? true,
           sourceUrl:
@@ -1173,6 +1239,39 @@ export function useConversionQueue(options: QueueOptions = AUDIO_QUEUE_OPTIONS) 
     [patchJob, pump, store],
   );
 
+  /**
+   * Makes finished files again with the settings as they stand now.
+   *
+   * Compressed to 25 MB, then asked for 8: each file that `planRerun` says
+   * would come out differently drops what the old settings made and goes
+   * back in the queue for what the new ones ask for, without being read
+   * again from disk or dropped on the page a second time.
+   */
+  const rerunJobs = useCallback(() => {
+    let changed = false;
+    const next = store.jobs.map((job) => {
+      const plan = planRerun(job, settingsFormats(store, job.probe), store.stripMetadata);
+      if (!plan) return job;
+      changed = true;
+      for (const output of plan.dropped) {
+        if (output.url) URL.revokeObjectURL(output.url);
+      }
+      return {
+        ...job,
+        outputs: [
+          ...job.outputs.filter((output) => !plan.dropped.includes(output)),
+          ...makeOutputs(plan.missing, null, job.probe, true),
+        ],
+        status: "queued" as const,
+        phase: "Waiting...",
+        error: undefined,
+      };
+    });
+    if (!changed) return;
+    commit(next);
+    void pump();
+  }, [commit, pump, store]);
+
   const cancelJob = useCallback(
     (jobId: string) => {
       const job = store.jobs.find((entry) => entry.id === jobId);
@@ -1290,6 +1389,12 @@ export function useConversionQueue(options: QueueOptions = AUDIO_QUEUE_OPTIONS) 
     (job) => job.status === "queued" || job.status === "preparing" || job.status === "converting",
   ).length;
 
+  // Read on every render: a settings panel hands over a new catalogue by
+  // re-rendering, not through the store.
+  const rerunCount = jobs.filter(
+    (job) => planRerun(job, settingsFormats(store, job.probe), stripMetadata) !== null,
+  ).length;
+
   return {
     jobs,
     engineState: engine,
@@ -1307,6 +1412,8 @@ export function useConversionQueue(options: QueueOptions = AUDIO_QUEUE_OPTIONS) 
     cancelJob,
     removeJob,
     retryJob,
+    rerunJobs,
+    rerunCount,
     clearFinished,
     activeCount,
   };

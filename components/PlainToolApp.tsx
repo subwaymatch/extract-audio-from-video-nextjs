@@ -5,11 +5,12 @@ import { useCallback, useState, type ReactNode } from "react";
 
 import { archiveName, downloadAllAsZip } from "@/lib/download";
 import { formatBytes } from "@/lib/format-utils";
-import { usePlainQueue, type PlainJob, type PlainOutput, type PlainQueueOptions } from "@/lib/plainQueue";
+import { needsRerun, usePlainQueue, type PlainJob, type PlainOutput, type PlainQueueOptions } from "@/lib/plainQueue";
 import type { ToolMeta } from "@/lib/tools";
 
 import { DropZone } from "./DropZone";
 import { ProgressBar } from "./ProgressBar";
+import { RerunNotice } from "./RerunNotice";
 import { ToolFrame } from "./ToolFrame";
 import type { ToolDropZone } from "./ToolApp";
 import { Button } from "./ui/Button";
@@ -232,9 +233,10 @@ function JobCard({
  * the queue runs them one at a time and this shows the result.
  */
 export function PlainToolApp<S>({ tool, lead, queue: options, settings, dropZone, note, busyLabel = "Working" }: PlainToolAppProps<S>) {
-  const { jobs, addFiles, addExtra, removeJob, retryJob, clearFinished, activeCount } = usePlainQueue(options);
+  const { jobs, addFiles, addExtra, removeJob, retryJob, rerunJobs, clearFinished, activeCount } = usePlainQueue(options);
   const [showSettings, setShowSettings] = useState(settings?.defaultOpen ?? false);
   const invalid = settings?.invalid?.() ?? null;
+  const outdated = jobs.filter((job) => needsRerun(job, options.settings)).length;
 
   const handleFiles = useCallback(
     (files: File[]) => {
@@ -267,6 +269,7 @@ export function PlainToolApp<S>({ tool, lead, queue: options, settings, dropZone
               {invalid}
             </p>
           )}
+          <RerunNotice count={invalid ? 0 : outdated} onRerun={rerunJobs} effect="A rerun works them again, and each card shows the new result in place of the old." />
         </div>
       )}
 

@@ -160,6 +160,28 @@
   color: var(--destructive);
 }
 
+/* The panel no longer matches the files below: say so, and offer a rerun. */
+.settingsRerun {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
+  border-top: 1px solid var(--accent-soft-border);
+  border-bottom-left-radius: inherit;
+  border-bottom-right-radius: inherit;
+  background: var(--accent-soft);
+  padding: 0.625rem 1rem;
+}
+
+.settingsRerunText {
+  min-width: 0;
+  flex: 1 1 16rem;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--foreground);
+}
+
 .checkboxRow {
   margin-top: 0.75rem;
   display: flex;

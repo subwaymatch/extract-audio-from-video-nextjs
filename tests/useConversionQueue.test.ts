@@ -233,7 +233,8 @@ vi.mock("@/lib/engine/ffmpegEngine", () => ({
   },
 }));
 
-import { resetQueueStores, useConversionQueue } from "@/lib/useConversionQueue";
+import { frameAtFormat } from "@/lib/engine/frames";
+import { planRerun, resetQueueStores, useConversionQueue, type Job, type JobOutput } from "@/lib/useConversionQueue";
 
 type Hook = ReturnType<typeof renderHook<ReturnType<typeof useConversionQueue>, unknown>>;
 
@@ -893,6 +894,141 @@ describe("outputs from the file itself", () => {
     await waitFor(() => expect(job(hook).status).toBe("done"));
     expect(formats(hook)).toEqual(["piece-1", "piece-2", "piece-3"]);
     expect(job(hook).outputs[2].label).toBe("Piece 3 of 120s");
+  });
+});
+
+describe("rerunning with new settings", () => {
+  /** One file through to the end with only these formats selected. */
+  async function convert(hook: Hook, ids: string[]) {
+    await act(async () => {
+      hook.result.current.setSelectedFormats(ids);
+    });
+    await act(async () => {
+      hook.result.current.addFiles([file()]);
+    });
+    const first = await session(0);
+    for (const id of ids) {
+      const call = await nextCall(first);
+      expect(call.formatId).toBe(id);
+      await finish(call);
+    }
+    await waitFor(() => expect(job(hook).status).toBe("done"));
+  }
+
+  it("replaces what the old settings made and keeps what was added from the card", async () => {
+    const hook = setup();
+    await convert(hook, ["mp3"]);
+    expect(hook.result.current.rerunCount).toBe(0);
+
+    // A format asked for from the card is the visitor's, not the settings'.
+    await act(async () => {
+      hook.result.current.addFormatToJob(job(hook).id, "original");
+    });
+    await finish(await nextCall(await session(1)));
+    await waitFor(() => expect(job(hook).status).toBe("done"));
+    const mp3 = job(hook).outputs[0].url;
+
+    await act(async () => {
+      hook.result.current.setSelectedFormats(["flac"]);
+    });
+    expect(hook.result.current.rerunCount).toBe(1);
+
+    await act(async () => {
+      hook.result.current.rerunJobs();
+    });
+    const call = await nextCall(await session(2));
+    expect(call.formatId).toBe("flac");
+    expect(formats(hook)).toEqual(["original", "flac"]);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(mp3);
+    await finish(call);
+    await waitFor(() => expect(job(hook).status).toBe("done"));
+    expect(outputs(hook)).toEqual(["original:done", "flac:done"]);
+    expect(hook.result.current.rerunCount).toBe(0);
+  });
+
+  it("makes a file again when only the metadata switch changed", async () => {
+    const hook = setup();
+    await convert(hook, ["mp3"]);
+    expect(job(hook).outputs[0].stripMetadata).toBe(true);
+
+    await act(async () => {
+      hook.result.current.setStripMetadata(false);
+    });
+    expect(hook.result.current.rerunCount).toBe(1);
+    await act(async () => {
+      hook.result.current.rerunJobs();
+    });
+    const call = await nextCall(await session(1));
+    expect(call.formatId).toBe("mp3");
+    expect((call.options as ExtractOptions).stripMetadata).toBe(false);
+    await finish(call);
+    await waitFor(() => expect(job(hook).status).toBe("done"));
+    expect(outputs(hook)).toEqual(["mp3:done"]);
+    expect(job(hook).outputs[0].stripMetadata).toBe(false);
+    expect(hook.result.current.rerunCount).toBe(0);
+  });
+
+  it("swaps a whole set of frames for the set a new interval makes, keeping the one asked for by hand", () => {
+    const every5 = { everySeconds: 5, image: "jpg" as const };
+    const every2 = { everySeconds: 2, image: "jpg" as const };
+    const made = (format: OutputFormat, fromSettings: boolean): JobOutput => ({
+      id: format.id,
+      formatId: format.id,
+      format,
+      label: format.label,
+      trim: null,
+      status: "done",
+      ratio: 1,
+      processedSeconds: 0,
+      fromSettings,
+      stripMetadata: true,
+    });
+    const frames = [made(frameAtFormat(0, every5), true), made(frameAtFormat(1, every5), true), made(frameAtFormat(5, every2), false)];
+    const job = { id: "j", status: "done", probe: fake.PROBE, outputs: frames } as unknown as Job;
+
+    expect(planRerun(job, [frameAtFormat(0, every5), frameAtFormat(1, every5)], true)).toBeNull();
+    const plan = planRerun(job, [0, 1, 2].map((index) => frameAtFormat(index, every2)), true);
+    expect(plan?.missing.map((format) => format.id)).toEqual(["frame-1-every2s-jpg", "frame-2-every2s-jpg", "frame-3-every2s-jpg"]);
+    expect(plan?.dropped.map((output) => output.formatId)).toEqual(["frame-1-every5s-jpg", "frame-2-every5s-jpg"]);
+    // Running, or never opened: nothing to plan.
+    expect(planRerun({ ...job, status: "converting" }, [frameAtFormat(0, every2)], true)).toBeNull();
+    expect(planRerun({ ...job, probe: undefined }, [frameAtFormat(0, every2)], true)).toBeNull();
+  });
+
+  it("counts neither a format the visitor cancelled nor a file that never opened", async () => {
+    const hook = setup();
+    await act(async () => {
+      hook.result.current.setSelectedFormats(["original", "mp3"]);
+    });
+    await act(async () => {
+      hook.result.current.addFiles([file("a.mp4")]);
+    });
+    const first = await session(0);
+    const original = await nextCall(first);
+    // Still running: it finishes on the settings it started with.
+    await act(async () => {
+      hook.result.current.setSelectedFormats(["flac"]);
+    });
+    expect(hook.result.current.rerunCount).toBe(0);
+    await act(async () => {
+      hook.result.current.setSelectedFormats(["original", "mp3"]);
+      hook.result.current.cancelOutput(job(hook).id, job(hook).outputs[1].id);
+    });
+    await finish(original);
+    await waitFor(() => expect(job(hook).status).toBe("done"));
+    expect(outputs(hook)).toEqual(["original:done", "mp3:cancelled"]);
+    expect(hook.result.current.rerunCount).toBe(0);
+
+    fake.state.openFails = new ExtractionError("This file is not a video.");
+    await act(async () => {
+      hook.result.current.addFiles([file("b.mp4")]);
+    });
+    await waitFor(() => expect(job(hook, 1).status).toBe("error"));
+    await act(async () => {
+      hook.result.current.setSelectedFormats(["flac"]);
+    });
+    // Only the file that was read; the other is a Retry away.
+    expect(hook.result.current.rerunCount).toBe(1);
   });
 });
 

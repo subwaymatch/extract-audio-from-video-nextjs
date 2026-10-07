@@ -85,8 +85,14 @@ export interface PlainJob {
   error?: PlainFailure;
   /** Object URL of the source, for a thumbnail, when the tool asked for one. */
   previewUrl?: string;
-  /** The settings this job runs with, captured when it was added. */
+  /** The settings this job runs with, captured when it was added or last rerun. */
   settings: unknown;
+  /**
+   * Turned away by the tool's `reject` before it ever ran: a text file on
+   * the image resizer. The refusal is about the file, so no setting changes
+   * it and a rerun passes it by.
+   */
+  rejected?: boolean;
   /**
    * Extra outputs asked for from the card and not yet produced, by id.
    *
@@ -169,6 +175,40 @@ export function toPlainFailure(error: unknown): PlainFailure {
 /** Outputs with their URLs and sizes filled in. */
 export function materializeOutputs(specs: readonly PlainOutputSpec[]): PlainOutput[] {
   return specs.map((spec) => ({ ...spec, id: nextId("output"), url: URL.createObjectURL(spec.blob), bytes: spec.blob.size }));
+}
+
+/**
+ * Whether two settings values say the same thing.
+ *
+ * A tool hands the queue a fresh object whenever its panel changes, and some
+ * build one on every render - `{ ...settings, picture }` - so identity says
+ * nothing. Plain data is compared by value; anything else (a File chosen as
+ * a watermark, a font's bytes) by identity, which is what changes when
+ * someone picks another one.
+ */
+export function sameSettings(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (Array.isArray(a)) return Array.isArray(b) && a.length === b.length && a.every((entry, index) => sameSettings(entry, b[index]));
+  if (!isPlainObject(a) || !isPlainObject(b)) return false;
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((key) => Object.hasOwn(b, key) && sameSettings(a[key], b[key]));
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+/**
+ * Whether a job would come out differently under these settings.
+ *
+ * A job still waiting counts: it has not started, so it may as well start on
+ * what the panel says now. The one running does not; it finishes on the
+ * settings it began with and is offered again once it has.
+ */
+export function needsRerun(job: PlainJob, settings: unknown): boolean {
+  return !job.rejected && job.status !== "working" && !sameSettings(job.settings, settings);
 }
 
 /** @internal - lets tests start from a clean page. */
@@ -323,8 +363,10 @@ export function usePlainQueue<S>(options: PlainQueueOptions<S>) {
           settings,
           extras: [],
         };
-        if (rejection) base.error = { ...rejection, retryable: false };
-        else if (preview) base.previewUrl = URL.createObjectURL(file);
+        if (rejection) {
+          base.error = { ...rejection, retryable: false };
+          base.rejected = true;
+        } else if (preview) base.previewUrl = URL.createObjectURL(file);
         return base;
       });
       store.jobs = [...store.jobs, ...added];
@@ -359,6 +401,30 @@ export function usePlainQueue<S>(options: PlainQueueOptions<S>) {
     [store],
   );
 
+  /**
+   * Works files again with the settings as they stand now.
+   *
+   * The resizer that made a file 1024 pixels wide is asked for 2048: the
+   * file is already on the page, and dropping it again to get there is a
+   * chore. Each job takes the current settings and goes back in the queue,
+   * its old outputs released, since the card shows what one set of settings
+   * made of the file. Only the jobs `needsRerun` picks out are touched.
+   */
+  const rerunJobs = useCallback(() => {
+    const { settings } = store.options;
+    let changed = false;
+    store.jobs = store.jobs.map((job) => {
+      if (!needsRerun(job, settings)) return job;
+      changed = true;
+      if (job.status === "queued") return { ...job, settings };
+      for (const output of job.outputs) URL.revokeObjectURL(output.url);
+      return { ...job, settings, status: "queued", phase: "Waiting", ratio: null, outputs: [], error: undefined, notes: [], extras: [] };
+    });
+    if (!changed) return;
+    notify(store);
+    void pump(store);
+  }, [store]);
+
   const addExtra = useCallback(
     (id: string, formatId: string) => {
       store.jobs = store.jobs.map((job) => (job.id === id && !job.extras.includes(formatId) ? { ...job, extras: [...job.extras, formatId] } : job));
@@ -380,7 +446,7 @@ export function usePlainQueue<S>(options: PlainQueueOptions<S>) {
 
   const activeCount = jobs.filter((job) => job.status === "queued" || job.status === "working" || job.extras.length > 0).length;
 
-  return { jobs, addFiles, addExtra, removeJob, retryJob, clearFinished, activeCount };
+  return { jobs, addFiles, addExtra, removeJob, retryJob, rerunJobs, clearFinished, activeCount };
 }
 
 /* ---- Many files, one job ------------------------------------------------ */

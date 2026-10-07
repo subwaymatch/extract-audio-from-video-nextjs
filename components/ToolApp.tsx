@@ -13,6 +13,7 @@ import { useConversionQueue, type QueueOptions } from "@/lib/useConversionQueue"
 import { DropZone } from "./DropZone";
 import { EngineBanner } from "./EngineBanner";
 import { FileCard } from "./FileCard";
+import { RerunNotice } from "./RerunNotice";
 import { EngineFootnote, ToolFrame } from "./ToolFrame";
 import settingsStyles from "./Settings.module.css";
 import styles from "./ToolApp.module.css";
@@ -108,6 +109,8 @@ export function ToolApp({
     cancelJob,
     removeJob,
     retryJob,
+    rerunJobs,
+    rerunCount,
     clearFinished,
     activeCount,
   } = queue;
@@ -247,6 +250,11 @@ export function ToolApp({
               {invalid}
             </p>
           )}
+          <RerunNotice
+            count={invalid ? 0 : rerunCount}
+            onRerun={rerunJobs}
+            effect="A rerun replaces what the old settings made; anything added from a card stays."
+          />
         </div>
       )}
 

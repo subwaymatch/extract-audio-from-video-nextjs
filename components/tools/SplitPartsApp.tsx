@@ -93,7 +93,7 @@ export function SplitPartsApp({ slug }: SplitPartsAppProps) {
       key: slug,
       formats: pieceFormats(rule, video ? cut : "fast"),
       defaultFormatIds: [],
-      formatsForFile: pieceFormatIds(rule),
+      formatsForFile: pieceFormatIds(rule, video ? cut : "fast"),
       expects: video ? "video" : "audio",
       openWithoutOutputs: true,
       waveform: false,

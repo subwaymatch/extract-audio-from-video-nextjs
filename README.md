@@ -1146,6 +1146,28 @@ left to finish, since the next file needs it anyway, and the card says "Cancelli
 Cancelling a file that has not started costs nothing at all, and a queued file whose every format
 has been cancelled is settled without ever being opened.
 
+### Rerunning with new settings
+
+Both queues capture the settings a file was added under, so a change to the panel never alters
+work already done. Someone who resized to 1024 and then wanted 2048 used to have to remove each
+file and drop it again. Now, once the panel no longer matches the files below it, its foot says
+how many it differs from and offers "Rerun with new settings", which sends them back through
+without reading anything from disk a second time.
+
+On the plain queue a file is out of date when the settings it was added under differ by value
+from the panel's (a File, such as a chosen watermark, compares by identity). A rerun replaces the
+card's result, and a file still waiting just takes the new settings before it starts. The file
+being worked on finishes on what it began with and is offered afterwards. A file the tool refused
+is about the file, not the settings, and is left alone.
+
+On the conversion queue the settings live in the format ids, so a file is out of date when one of
+the formats the panel asks for has no whole-file output on its card, or has one made with the
+other metadata switch. A rerun replaces what the earlier settings queued and keeps clips and the
+formats added from the card's own chips. A cancelled or failed row still counts as covered, since
+that is the visitor's decision or a Retry away, and a file that never opened is a Retry, not a
+rerun. The frame extractor and the splitter number their outputs, so their ids carry the interval
+or the rule as well: frame 3 every 5 seconds and frame 3 every 2 are different outputs.
+
 ### Navigation
 
 The header is sticky: the mark and wordmark, an "All tools" menu on Base UI's Navigation Menu

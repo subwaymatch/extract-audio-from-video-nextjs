@@ -2,7 +2,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { PlainError, resetPlainStores, useCombineQueue, usePlainQueue, type PlainResult } from "@/lib/plainQueue";
+import { needsRerun, PlainError, resetPlainStores, sameSettings, useCombineQueue, usePlainQueue, type PlainResult } from "@/lib/plainQueue";
 
 const file = (name: string, size = 10) => new File([new Uint8Array(size)], name);
 
@@ -146,6 +146,69 @@ describe("the plain queue", () => {
     act(() => hook.result.current.removeJob(hook.result.current.jobs[1].id));
     expect(calls[0].signal.aborted).toBe(true);
     expect(hook.result.current.jobs).toHaveLength(1);
+  });
+});
+
+describe("rerunning with new settings", () => {
+  it("compares settings by value, and anything that is not plain data by identity", () => {
+    const logo = file("logo.png");
+    expect(sameSettings({ rule: { kind: "longest", pixels: 1024 }, mime: "same" }, { rule: { kind: "longest", pixels: 1024 }, mime: "same" })).toBe(true);
+    expect(sameSettings({ rule: { kind: "longest", pixels: 1024 } }, { rule: { kind: "longest", pixels: 2048 } })).toBe(false);
+    expect(sameSettings({ formats: ["gpx", "kml"] }, { formats: ["gpx"] })).toBe(false);
+    expect(sameSettings({ a: 1 }, { a: 1, b: undefined })).toBe(false);
+    expect(sameSettings({}, {})).toBe(true);
+    expect(sameSettings({ logo }, { logo })).toBe(true);
+    expect(sameSettings({ logo }, { logo: file("logo.png") })).toBe(false);
+  });
+
+  it("works files again under the settings as they stand, leaving the running and the refused alone", async () => {
+    const calls: Deferred[] = [];
+    const run = vi.fn(
+      (input: File, settings: unknown, _report: unknown, signal: AbortSignal) =>
+        new Promise<PlainResult>((resolve, reject) => calls.push({ resolve, reject, file: input, settings, signal })),
+    );
+    const picture = { label: "PNG", fileName: "a.png", blob: new Blob([new Uint8Array(3)]), kind: "image" as const };
+    const hook = renderHook(
+      ({ pixels }: { pixels: number }) =>
+        usePlainQueue({ key: "rerun", run, settings: { pixels }, reject: (candidate) => (candidate.name.endsWith(".txt") ? { message: "Not a picture.", hint: "Nope." } : null) }),
+      { initialProps: { pixels: 1024 } },
+    );
+    const outdated = () => hook.result.current.jobs.filter((job) => needsRerun(job, { pixels: 2048 })).map((job) => job.file.name);
+
+    act(() => hook.result.current.addFiles([file("a.png"), file("b.png"), file("notes.txt")]));
+    await waitFor(() => expect(calls).toHaveLength(1));
+    hook.rerender({ pixels: 2048 });
+    // The running one finishes on what it started with, and a refusal is
+    // about the file, so only the one still waiting is out of date.
+    expect(outdated()).toEqual(["b.png"]);
+    act(() => hook.result.current.rerunJobs());
+    expect(hook.result.current.jobs[1]).toMatchObject({ status: "queued", settings: { pixels: 2048 } });
+
+    await act(async () => calls[0].resolve({ outputs: [picture] }));
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].settings).toEqual({ pixels: 2048 });
+    expect(outdated()).toEqual(["a.png"]);
+    await act(async () => calls[1].resolve({ outputs: [picture] }));
+    await waitFor(() => expect(hook.result.current.jobs[1].status).toBe("done"));
+
+    const stale = hook.result.current.jobs[0].outputs[0].url;
+    act(() => hook.result.current.rerunJobs());
+    // Straight back to work: nothing else is waiting.
+    expect(hook.result.current.jobs[0]).toMatchObject({ status: "working", outputs: [], settings: { pixels: 2048 } });
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(stale);
+    expect(hook.result.current.jobs[2]).toMatchObject({ status: "error", error: { message: "Not a picture." } });
+
+    await waitFor(() => expect(calls).toHaveLength(3));
+    expect(calls[2].file.name).toBe("a.png");
+    expect(calls[2].settings).toEqual({ pixels: 2048 });
+    await act(async () => calls[2].resolve({ outputs: [picture] }));
+    await waitFor(() => expect(hook.result.current.jobs[0].status).toBe("done"));
+    expect(hook.result.current.jobs[0].outputs).toHaveLength(1);
+    expect(outdated()).toEqual([]);
+
+    // Nothing out of date: nothing runs.
+    act(() => hook.result.current.rerunJobs());
+    expect(run).toHaveBeenCalledTimes(3);
   });
 });
 

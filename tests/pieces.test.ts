@@ -42,7 +42,11 @@ describe("equal parts", () => {
   it("offers one format per piece and labels each by its range", () => {
     const rule = { kind: "length" as const, seconds: 250 };
     expect(pieceFormats(rule)).toHaveLength(MAX_PIECES);
-    expect(pieceFormatIds(rule)(probe())).toEqual(["part-1", "part-2", "part-3"]);
+    expect(pieceFormatIds(rule)(probe())).toEqual(["part-1-250s-fast", "part-2-250s-fast", "part-3-250s-fast"]);
+    // The ids name the rule and the cut, so a rerun under another one tells its parts apart.
+    expect(pieceFormatIds(rule)(probe())).toEqual(pieceFormats(rule).slice(0, 3).map((format) => format.id));
+    expect(pieceFormatIds({ kind: "count", count: 2 }, "exact")(probe())).toEqual(["part-1-of2-exact", "part-2-of2-exact"]);
+    expect(pieceFormat(0, rule, "exact").id).toBe("part-1-250s-exact");
     expect(pieceFormat(2, rule).offer?.(probe(), context())).toBe(true);
     expect(pieceFormat(3, rule).offer?.(probe(), context())).toBe(false);
     expect(pieceFormat(1, rule).describe?.(probe())).toBe("Part 2 of 3: 4:10 to 8:20 or a little before");
